@@ -5,6 +5,56 @@ latency. Packets are duplicated across several UDP ports so that one congested
 path does not cost a packet; there is no retransmission and no reorder buffer,
 because anything needing a round trip to recover has already missed its tick.
 
+## Quick start
+
+One command per node, **furthest hop first** — each relay needs the address of
+the hop ahead of it. Use the same password on every node.
+
+```bash
+# 1. Landing node, nearest the game server
+curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
+  | sudo bash -s -- --role exit --password 'YOUR_SHARED_SECRET'
+
+# 2. Jittery middle hop: duplicate packets across four ports
+curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
+  | sudo bash -s -- --role relay --password 'YOUR_SHARED_SECRET' \
+    --next-hop EXIT_IP --redundancy 3
+
+# 3. The hop clients connect to; on a leased line duplication buys nothing
+curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
+  | sudo bash -s -- --role relay --password 'YOUR_SHARED_SECRET' \
+    --next-hop MIDDLE_HOP_IP --redundancy 1 --out-ports 20001,20002
+```
+
+Then start each node:
+
+```bash
+sudo systemctl start max301-exit     # on the landing node
+sudo systemctl start max301-relay    # on every relay
+sudo journalctl -u max301-relay -f   # watch it
+```
+
+Windows client, as administrator:
+
+```powershell
+curl.exe -LO https://github.com/l2039693695-boop/max301/releases/latest/download/max301-client-windows-amd64.exe
+curl.exe -LO https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install-wintun.ps1
+.\install-wintun.ps1
+curl.exe -o chnroute.txt https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt
+
+# Write client.yaml (see configs/client.yaml.example), then:
+.\max301-client-windows-amd64.exe -c client.yaml
+```
+
+Two things that bite people. A cloud provider's security group sits outside the
+host and the installer cannot reach it — open the UDP ports there as well, or
+nothing connects. And the client must run as administrator; it creates a network
+adapter and edits the route table.
+
+Prove the setup out with a single node first: point the client straight at the
+landing node's host and ports. That path is tested and works, and it tells you
+the game's latency before extra hops make a fault hard to place.
+
 ## Layout
 
 ```
@@ -73,36 +123,17 @@ go run ./cmd/e2e
 
 ## Deploy
 
-One command per node, furthest hop first — each relay needs the address of the
-hop ahead of it. Use the same password everywhere; a mismatch shows up as a
-tunnel that silently carries nothing, with the `invalid` counter climbing.
-
-```bash
-# 1. Landing node, nearest the game server
-curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
-  | sudo bash -s -- --role exit --password 'SHARED_SECRET'
-
-# 2. Each intermediate hop, pointing at the one ahead.
-#    Raise redundancy on a jittery path, leave it at 1 on a leased line.
-curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
-  | sudo bash -s -- --role relay --password 'SHARED_SECRET' \
-    --next-hop EXIT_IP --redundancy 3
-
-# 3. The hop clients connect to
-curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
-  | sudo bash -s -- --role relay --password 'SHARED_SECRET' \
-    --next-hop PREVIOUS_HOP_IP --redundancy 1 --out-ports 20001,20002
-```
-
-The installer builds from source when Go is present and falls back to a release
-binary otherwise. It writes the config with mode 600, installs a systemd unit,
-enlarges the UDP buffers, and opens the ports on the host firewall. Start each
-node with `systemctl start max301-relay` (or `max301-exit`).
-
-A cloud provider's security group is outside the host and the installer cannot
-reach it. Open the UDP ports there too, or nothing will connect.
+See **Quick start** above for the one-command installer. It builds from source
+when Go is present and falls back to a release binary otherwise, writes the
+config with mode 600, installs a systemd unit, enlarges the UDP buffers, and
+opens the ports on the host firewall.
 
 Set `MAX301_REPO=owner/fork` to install from a fork.
+
+A mismatched password shows up as a tunnel that silently carries nothing, with
+the `invalid` counter climbing in the logs — frames that fail authentication are
+dropped without comment, which is the right behaviour on a public port but gives
+you no error to read.
 
 Manual installation, if you would rather not pipe a script into a shell:
 
@@ -114,18 +145,11 @@ sudo vi /etc/max301/relay.yaml
 sudo systemctl start max301-relay
 ```
 
-On Windows, as administrator:
+Building the client from source instead of taking the release binary:
 
 ```powershell
-.\scripts\install-wintun.ps1
-curl.exe -o chnroute.txt https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt
-.\max301-client.exe -c client.yaml
+go build -o max301-client.exe .\cmd\client
 ```
-
-Start with a single node while proving the setup out: point the client straight
-at the exit node's host and ports. That path is tested and works, and it tells
-you what the game's latency looks like before extra hops make a fault hard to
-place.
 
 ## Tuning redundancy
 

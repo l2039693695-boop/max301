@@ -73,7 +73,38 @@ go run ./cmd/e2e
 
 ## Deploy
 
-On each Linux node:
+One command per node, furthest hop first — each relay needs the address of the
+hop ahead of it. Use the same password everywhere; a mismatch shows up as a
+tunnel that silently carries nothing, with the `invalid` counter climbing.
+
+```bash
+# 1. Landing node, nearest the game server
+curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
+  | sudo bash -s -- --role exit --password 'SHARED_SECRET'
+
+# 2. Each intermediate hop, pointing at the one ahead.
+#    Raise redundancy on a jittery path, leave it at 1 on a leased line.
+curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
+  | sudo bash -s -- --role relay --password 'SHARED_SECRET' \
+    --next-hop EXIT_IP --redundancy 3
+
+# 3. The hop clients connect to
+curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
+  | sudo bash -s -- --role relay --password 'SHARED_SECRET' \
+    --next-hop PREVIOUS_HOP_IP --redundancy 1 --out-ports 20001,20002
+```
+
+The installer builds from source when Go is present and falls back to a release
+binary otherwise. It writes the config with mode 600, installs a systemd unit,
+enlarges the UDP buffers, and opens the ports on the host firewall. Start each
+node with `systemctl start max301-relay` (or `max301-exit`).
+
+A cloud provider's security group is outside the host and the installer cannot
+reach it. Open the UDP ports there too, or nothing will connect.
+
+Set `MAX301_REPO=owner/fork` to install from a fork.
+
+Manual installation, if you would rather not pipe a script into a shell:
 
 ```bash
 sudo ./scripts/setup-server.sh relay   # or: exit
@@ -87,9 +118,14 @@ On Windows, as administrator:
 
 ```powershell
 .\scripts\install-wintun.ps1
-curl -o chnroute.txt https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt
+curl.exe -o chnroute.txt https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt
 .\max301-client.exe -c client.yaml
 ```
+
+Start with a single node while proving the setup out: point the client straight
+at the exit node's host and ports. That path is tested and works, and it tells
+you what the game's latency looks like before extra hops make a fault hard to
+place.
 
 ## Tuning redundancy
 

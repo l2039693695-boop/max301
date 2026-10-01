@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Max301 one-command installer for a Linux node.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/max301/main/scripts/install.sh | sudo bash -s -- \
+#   curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh | sudo bash -s -- \
 #       --role exit --password 'SHARED_SECRET'
 #
 #   curl -fsSL .../install.sh | sudo bash -s -- \
@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-REPO="${MAX301_REPO:-OWNER/max301}"
+REPO="${MAX301_REPO:-l2039693695-boop/max301}"
 BRANCH="${MAX301_BRANCH:-main}"
 
 ROLE=""

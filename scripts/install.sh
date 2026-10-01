@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Max301 one-command installer for a Linux node.
 #
-#   curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh | sudo bash -s -- \
-#       --role exit --password 'SHARED_SECRET'
+# Interactive: asks for the role, next hop and password, and detects this host's
+# public address.
 #
-#   curl -fsSL .../install.sh | sudo bash -s -- \
-#       --role relay --password 'SHARED_SECRET' --next-hop 1.2.3.4 --redundancy 3
+#   curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh | sudo bash
+#
+# Or pass everything up front, for a scripted install:
+#
+#   curl -fsSL .../install.sh | sudo bash -s -- --role exit --password 'SECRET'
+#   curl -fsSL .../install.sh | sudo bash -s -- --role relay --password 'SECRET' \
+#       --next-hop 1.2.3.4 --redundancy 3
 #
 # Builds from source when Go is present, otherwise fetches a release binary.
 # Writes the config, installs a systemd service, tunes UDP buffers, opens ports.
@@ -21,6 +26,7 @@ NEXT_HOP=""
 REDUNDANCY=""
 IN_PORTS=""
 OUT_PORTS=""
+WIZARD=0
 
 die() { echo "error: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -34,13 +40,140 @@ while [[ $# -gt 0 ]]; do
     --in-ports)    IN_PORTS="${2:-}"; shift 2 ;;
     --out-ports)   OUT_PORTS="${2:-}"; shift 2 ;;
     -h|--help)
-      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
 
 [[ $EUID -eq 0 ]] || die "must run as root (prefix the command with sudo)"
+
+# ----------------------------------------------------------------- wizard ---
+# With "curl ... | bash" the script itself occupies stdin, so prompts have to
+# read the terminal directly or they would consume the script's own text.
+ask() {
+  local prompt="$1" def="${2:-}" ans=""
+  if [[ -n "$def" ]]; then
+    printf '%s [%s]: ' "$prompt" "$def" > /dev/tty
+  else
+    printf '%s: ' "$prompt" > /dev/tty
+  fi
+  IFS= read -r ans < /dev/tty || true
+  echo "${ans:-$def}"
+}
+
+say() { printf '%s\n' "$*" > /dev/tty; }
+
+# The public address a client must point at, which on a NAT'd cloud instance is
+# not any address the host itself can see.
+detect_ip() {
+  local ip u
+  for u in https://api.ipify.org https://ifconfig.me/ip https://ipinfo.io/ip; do
+    ip="$(curl -fsS --max-time 6 "$u" 2>/dev/null | tr -d '[:space:]')" || true
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "$ip"; return; fi
+  done
+  # No outbound HTTP: fall back to the source address of the default route.
+  ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -1
+}
+
+valid_ip() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
+
+if [[ -z "$ROLE" ]]; then
+  [[ -r /dev/tty ]] || die "无法交互（没有终端）。请改用参数形式：--role exit --password '...'"
+  command -v curl >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 || true; apt-get install -y -qq curl >/dev/null 2>&1 || true; }
+
+  MY_IP="$(detect_ip)"
+  say ""
+  say "=============================================="
+  say "        Max301 游戏加速 一键部署"
+  say "=============================================="
+  say ""
+  say "  本机公网 IP : ${MY_IP:-未能自动识别}"
+  say "  系统        : $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s) / $(uname -m)"
+  say ""
+  say "  请选择本机的角色："
+  say ""
+  say "    1) 落地节点  —— 离游戏服最近的那台，流量从这里出去"
+  say "    2) 中转节点  —— 中间跳，把流量转给下一跳"
+  say ""
+  while :; do
+    sel="$(ask '  输入 1 或 2' '1')"
+    case "$sel" in
+      1) ROLE="exit";  say "  → 落地节点"; break ;;
+      2) ROLE="relay"; say "  → 中转节点"; break ;;
+      *) say "  只能输入 1 或 2" ;;
+    esac
+  done
+  say ""
+
+  if [[ "$ROLE" == "relay" ]]; then
+    say "  中转节点需要知道「下一跳」的 IP —— 也就是更靠近游戏服的那台。"
+    say "  如果下一跳就是落地节点，填落地节点的公网 IP。"
+    say ""
+    while :; do
+      NEXT_HOP="$(ask '  下一跳 IP')"
+      if ! valid_ip "$NEXT_HOP"; then
+        say "  不是合法的 IPv4 地址"
+      elif [[ "$NEXT_HOP" == "$MY_IP" ]]; then
+        # Forwarding to itself would loop packets until the IP TTL expired.
+        say "  下一跳不能是本机 IP，那样会自己转给自己"
+      else
+        break
+      fi
+    done
+    say ""
+    say "  冗余份数：每个游戏包复制几份发出去，用来对冲丢包。"
+    say "    1 = 不复制（专线/很稳的线路，复制纯浪费带宽）"
+    say "    2 = 普通线路"
+    say "    3 = 抖动大的国际线路"
+    say ""
+    while :; do
+      REDUNDANCY="$(ask '  冗余份数（1-4）' '2')"
+      if [[ "$REDUNDANCY" =~ ^[1-4]$ ]]; then break; fi
+      say "  请输入 1 到 4 之间的数字"
+    done
+    say ""
+  fi
+  say "  通信密码：所有节点和客户端必须填完全一样的一串，不一样的话"
+  say "  连得上但一个包都通不了（密钥不同，解不开）。"
+  say ""
+  say "  第一台机器直接回车，脚本帮你生成；之后的机器粘贴同一串。"
+  say ""
+  while :; do
+    PASSWORD="$(ask '  通信密码（回车=自动生成）')"
+    if [[ -z "$PASSWORD" ]]; then
+      PASSWORD="$(openssl rand -base64 32 2>/dev/null | tr -d '/+=' | cut -c1-32)"
+      [[ -n "$PASSWORD" ]] || PASSWORD="$(head -c 48 /dev/urandom | base64 | tr -d '/+=' | cut -c1-32)"
+      say "  已生成：$PASSWORD"
+      break
+    elif (( ${#PASSWORD} < 16 )); then
+      say "  太短了，至少 16 位（当前 ${#PASSWORD} 位）"
+    else
+      break
+    fi
+  done
+
+  say ""
+  say "----------------------------------------------"
+  say "  即将部署"
+  say "----------------------------------------------"
+  if [[ "$ROLE" == "exit" ]]; then
+    say "  角色     : 落地节点"
+  else
+    say "  角色     : 中转节点"
+    say "  下一跳   : $NEXT_HOP"
+    say "  冗余份数 : $REDUNDANCY"
+  fi
+  say "  监听端口 : UDP 20001-20004"
+  say "  密码     : $PASSWORD"
+  say "----------------------------------------------"
+  say ""
+  c="$(ask '  确认开始？(y/n)' 'y')"
+  case "$c" in [yY]*) ;; *) say "  已取消"; exit 0 ;; esac
+  say ""
+  WIZARD=1
+fi
+# --------------------------------------------------------------- /wizard ---
 [[ "$ROLE" == "relay" || "$ROLE" == "exit" ]] || die "--role must be 'relay' or 'exit'"
 [[ -n "$PASSWORD" ]] || die "--password is required; the same value must be used on every node"
 [[ ${#PASSWORD} -ge 16 ]] || die "--password must be at least 16 characters"
@@ -236,3 +369,50 @@ Restart : systemctl restart max301-$ROLE
 If a cloud firewall or security group sits in front of this host, open UDP
 $LO-$HI there too. The host firewall rule above does not cover it.
 DONE
+
+if [[ "$WIZARD" == "1" ]]; then
+cat > /dev/tty <<ZH
+
+==============================================
+  部署完成
+==============================================
+
+  重要：云服务商的安全组在主机之外，上面的防火墙规则
+  管不到它。请去控制台放行入站 UDP $LO-$HI，否则连不上。
+
+ZH
+  if [[ "$ROLE" == "exit" ]]; then
+    cat > /dev/tty <<ZH
+  这是落地节点。下一步装中转节点时，「下一跳 IP」填：
+      $PUBLIC_IP
+
+  也可以让客户端直连本机先验证通不通（推荐这样起步，
+  少一跳出问题好定位）。客户端 client.yaml 填：
+
+      host: "$PUBLIC_IP"
+      ports: [20001, 20002]
+      password: "$PASSWORD"
+
+ZH
+  else
+    cat > /dev/tty <<ZH
+  这是中转节点，流量转给 $NEXT_HOP。
+
+  客户端 client.yaml 填本机地址：
+
+      host: "$PUBLIC_IP"
+      ports: [20001, 20002]
+      password: "$PASSWORD"
+      redundancy: 2
+
+ZH
+  fi
+  cat > /dev/tty <<ZH
+  常用命令：
+      journalctl -u max301-$ROLE -f      看日志
+      systemctl restart max301-$ROLE     重启
+      systemctl status max301-$ROLE      看状态
+==============================================
+
+ZH
+fi

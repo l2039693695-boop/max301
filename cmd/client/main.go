@@ -44,10 +44,85 @@ const (
 )
 
 func main() {
-	cfgPath := flag.String("c", "client.yaml", "path to the configuration file")
+	cfgPath := flag.String("c", "", "path to the configuration file (default: run the setup wizard)")
+	noWizard := flag.Bool("no-wizard", false, "never prompt; require -c")
 	flag.Parse()
 
-	cfg, err := config.LoadClient(*cfgPath)
+	setConsoleUTF8()
+
+	// Flag mode keeps the original behaviour for scripted use; with no flags the
+	// program is being double-clicked and walks the user through setup.
+	if *cfgPath == "" && !*noWizard {
+		banner()
+		if !ensureAdmin() {
+			return // a second, elevated process is taking over
+		}
+		dir := exeDir()
+		p, err := setup(dir)
+		if err != nil {
+			say("")
+			say("  设置失败：%v", err)
+			pause()
+			return
+		}
+		*cfgPath = p
+		runInteractive(*cfgPath)
+		return
+	}
+
+	if *cfgPath == "" {
+		*cfgPath = "client.yaml"
+	}
+	run(*cfgPath)
+}
+
+// runInteractive is the double-clicked path: it reports progress in Chinese and
+// keeps the window open on failure so the error is readable.
+func runInteractive(cfgPath string) {
+	say("")
+	say("----------------------------------------------")
+	say("  正在启动加速")
+	say("----------------------------------------------")
+
+	cfg, err := config.LoadClient(cfgPath)
+	if err != nil {
+		say("")
+		say("  配置有问题：%v", err)
+		pause()
+		return
+	}
+
+	c, err := newClient(cfg)
+	if err != nil {
+		say("")
+		say("  初始化失败：%v", err)
+		pause()
+		return
+	}
+	defer c.shutdown()
+
+	if err := c.start(); err != nil {
+		say("")
+		say("  启动失败：%v", err)
+		say("")
+		say("  常见原因：")
+		say("    - 服务器那边没启动，或云服务商安全组没放行 UDP 20001-20004")
+		say("    - 密码和服务器不一致")
+		say("    - wintun.dll 不在本程序同一个目录")
+		pause()
+		return
+	}
+
+	say("")
+	say("  加速已启动。关闭本窗口即停止，路由会自动还原。")
+	say("  日志写在 client.log。")
+	say("")
+	c.wait()
+	say("  正在还原网络设置...")
+}
+
+func run(cfgPath string) {
+	cfg, err := config.LoadClient(cfgPath)
 	if err != nil {
 		log.Fatal(err)
 	}

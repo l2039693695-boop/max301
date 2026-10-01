@@ -25,3 +25,6 @@ china_ip_list.txt
 vendor/
 *.test
 *.out
+
+# Release artefacts, uploaded to GitHub rather than committed.
+/dist/

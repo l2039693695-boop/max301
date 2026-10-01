@@ -7,53 +7,48 @@ because anything needing a round trip to recover has already missed its tick.
 
 ## Quick start
 
-One command per node, **furthest hop first** — each relay needs the address of
-the hop ahead of it. Use the same password on every node.
+### Servers
+
+The same command on every node. It asks for the role, detects this host's public
+address, and prints the client settings when it finishes.
 
 ```bash
-# 1. Landing node, nearest the game server
-curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
-  | sudo bash -s -- --role exit --password 'YOUR_SHARED_SECRET'
-
-# 2. Jittery middle hop: duplicate packets across four ports
-curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
-  | sudo bash -s -- --role relay --password 'YOUR_SHARED_SECRET' \
-    --next-hop EXIT_IP --redundancy 3
-
-# 3. The hop clients connect to; on a leased line duplication buys nothing
-curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh \
-  | sudo bash -s -- --role relay --password 'YOUR_SHARED_SECRET' \
-    --next-hop MIDDLE_HOP_IP --redundancy 1 --out-ports 20001,20002
+curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh | sudo bash
 ```
 
-Then start each node:
+Install the landing node first: a relay has to be told the address of the hop
+ahead of it, and the wizard asks for it.
+
+Scripted installs can still pass everything up front:
 
 ```bash
-sudo systemctl start max301-exit     # on the landing node
-sudo systemctl start max301-relay    # on every relay
-sudo journalctl -u max301-relay -f   # watch it
+curl -fsSL .../install.sh | sudo bash -s -- --role exit --password 'SECRET'
+curl -fsSL .../install.sh | sudo bash -s -- --role relay --password 'SECRET' \
+    --next-hop 1.2.3.4 --redundancy 3
 ```
 
-Windows client, as administrator:
+### Windows client
+
+Download and run it. The program asks for elevation itself, fetches wintun.dll
+and the domestic prefix list, then asks for the server address and password that
+the installer printed.
 
 ```powershell
 curl.exe -LO https://github.com/l2039693695-boop/max301/releases/latest/download/max301-client-windows-amd64.exe
-curl.exe -LO https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install-wintun.ps1
-.\install-wintun.ps1
-curl.exe -o chnroute.txt https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt
-
-# Write client.yaml (see configs/client.yaml.example), then:
-.\max301-client-windows-amd64.exe -c client.yaml
+.\max301-client-windows-amd64.exe
 ```
 
+Settings are saved to `client.yaml` beside the executable and reused on the next
+run. Pass `-c client.yaml` to skip the wizard entirely.
+
 Two things that bite people. A cloud provider's security group sits outside the
-host and the installer cannot reach it — open the UDP ports there as well, or
-nothing connects. And the client must run as administrator; it creates a network
-adapter and edits the route table.
+host and the installer cannot reach it — open UDP 20001-20004 there as well, or
+nothing connects. And the client must run elevated; it creates a network adapter
+and edits the route table.
 
 Prove the setup out with a single node first: point the client straight at the
-landing node's host and ports. That path is tested and works, and it tells you
-the game's latency before extra hops make a fault hard to place.
+landing node. That path is tested and works, and it tells you the game's latency
+before extra hops make a fault hard to place.
 
 ## Layout
 

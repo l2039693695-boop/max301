@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Max301 one-command installer for a Linux node.
 #
-# Interactive: asks for the role, next hop and password, and detects this host's
-# public address.
+# Interactive: asks for the role, ports, next hop and password, and detects this
+# host's public address.
 #
 #   curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh | sudo bash
 #
@@ -10,7 +10,8 @@
 #
 #   curl -fsSL .../install.sh | sudo bash -s -- --role exit --password 'SECRET'
 #   curl -fsSL .../install.sh | sudo bash -s -- --role relay --password 'SECRET' \
-#       --next-hop 1.2.3.4 --redundancy 3
+#       --next-hop 1.2.3.4 --redundancy 3 --in-ports 30001,30002 \
+#       --out-ports 30001,30002,30003,30004
 #
 # Builds from source when Go is present, otherwise fetches a release binary.
 # Writes the config, installs a systemd service, tunes UDP buffers, opens ports.
@@ -40,7 +41,7 @@ while [[ $# -gt 0 ]]; do
     --in-ports)    IN_PORTS="${2:-}"; shift 2 ;;
     --out-ports)   OUT_PORTS="${2:-}"; shift 2 ;;
     -h|--help)
-      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -77,6 +78,39 @@ detect_ip() {
 }
 
 valid_ip() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
+
+# check_ports validates a comma-separated list, printing the reason on stdout so
+# the caller can show it. Ports below 1024 collide with system services and are
+# refused outright.
+#
+# $2 = "local" also rejects a port already bound on this host. Only meaningful
+# for inbound ports: outbound ones belong to the next hop, where occupancy here
+# says nothing.
+check_ports() {
+  local list="$1" scope="${2:-}" p n=0 seen=""
+  [[ -n "$list" ]] || { echo "不能为空"; return 1; }
+  [[ "$list" != *" "* ]] || { echo "不要带空格，用逗号分隔"; return 1; }
+  for p in ${list//,/ }; do
+    [[ "$p" =~ ^[0-9]+$ ]] || { echo "\"$p\" 不是数字"; return 1; }
+    (( p >= 1024 && p <= 65535 )) || { echo "端口 $p 超出范围，请用 1024-65535"; return 1; }
+    case " $seen " in *" $p "*) echo "端口 $p 重复了"; return 1 ;; esac
+    seen="$seen $p"
+    n=$((n+1))
+  done
+  (( n >= 1 )) || { echo "至少要一个端口"; return 1; }
+  (( n <= 8 )) || { echo "最多 8 个端口（当前 $n 个）"; return 1; }
+  # A port already bound would make the service fail to start after install,
+  # which is a confusing place to find out.
+  if [[ "$scope" == "local" ]]; then
+    for p in ${list//,/ }; do
+      if ss -ulnH "sport = :$p" 2>/dev/null | grep -q .; then
+        echo "端口 $p 已经被本机别的程序占用了"
+        return 1
+      fi
+    done
+  fi
+  return 0
+}
 
 if [[ -z "$ROLE" ]]; then
   [[ -r /dev/tty ]] || die "无法交互（没有终端）。请改用参数形式：--role exit --password '...'"
@@ -134,6 +168,44 @@ if [[ -z "$ROLE" ]]; then
     done
     say ""
   fi
+
+  # Ports. A custom set matters when 20001-20004 is taken, or when a provider
+  # throttles a well-known range and a different one gets better treatment.
+  say "  监听端口：客户端（或上一跳）连进来的 UDP 端口。"
+  say "  直接回车用默认值。改的话用逗号分隔，例如 30001,30002,30003,30004"
+  say ""
+  if [[ "$ROLE" == "exit" ]]; then
+    default_in="20001,20002,20003,20004"
+  else
+    default_in="20001,20002"
+  fi
+  while :; do
+    IN_PORTS="$(ask '  本机监听端口' "$default_in")"
+    if err="$(check_ports "$IN_PORTS" local)"; then break; fi
+    say "  $err"
+  done
+  say ""
+
+  if [[ "$ROLE" == "relay" ]]; then
+    say "  转发端口：发给下一跳的 UDP 端口，必须和下一跳的监听端口一致。"
+    say "  端口越多，运营商把流量哈希到不同路径的机会越多。"
+    say "  端口数量不能少于冗余份数（$REDUNDANCY），否则多发的副本会打到没人听的端口。"
+    say ""
+    while :; do
+      OUT_PORTS="$(ask '  下一跳的端口' '20001,20002,20003,20004')"
+      if ! err="$(check_ports "$OUT_PORTS")"; then
+        say "  $err"
+        continue
+      fi
+      n="$(echo "$OUT_PORTS" | tr ',' '\n' | grep -c .)"
+      if (( n < REDUNDANCY )); then
+        say "  只有 $n 个端口，装不下 $REDUNDANCY 份冗余。加端口或把冗余降到 $n"
+        continue
+      fi
+      break
+    done
+    say ""
+  fi
   say "  通信密码：所有节点和客户端必须填完全一样的一串，不一样的话"
   say "  连得上但一个包都通不了（密钥不同，解不开）。"
   say ""
@@ -164,7 +236,8 @@ if [[ -z "$ROLE" ]]; then
     say "  下一跳   : $NEXT_HOP"
     say "  冗余份数 : $REDUNDANCY"
   fi
-  say "  监听端口 : UDP 20001-20004"
+  say "  监听端口 : UDP $IN_PORTS"
+  if [[ "$ROLE" == "relay" ]]; then say "  转发端口 : UDP $OUT_PORTS"; fi
   say "  密码     : $PASSWORD"
   say "----------------------------------------------"
   say ""
@@ -381,6 +454,10 @@ cat > /dev/tty <<ZH
   管不到它。请去控制台放行入站 UDP $LO-$HI，否则连不上。
 
 ZH
+  in_count=$(echo "$IN_PORTS" | tr ',' '
+' | grep -c .)
+  CLIENT_REDUNDANCY=2
+  (( CLIENT_REDUNDANCY <= in_count )) || CLIENT_REDUNDANCY=$in_count
   if [[ "$ROLE" == "exit" ]]; then
     cat > /dev/tty <<ZH
   这是落地节点。下一步装中转节点时，「下一跳 IP」填：
@@ -390,8 +467,9 @@ ZH
   少一跳出问题好定位）。客户端 client.yaml 填：
 
       host: "$PUBLIC_IP"
-      ports: [20001, 20002]
+      ports: [$(echo "$IN_PORTS" | sed "s/,/, /g")]
       password: "$PASSWORD"
+      redundancy: $CLIENT_REDUNDANCY
 
 ZH
   else
@@ -401,9 +479,9 @@ ZH
   客户端 client.yaml 填本机地址：
 
       host: "$PUBLIC_IP"
-      ports: [20001, 20002]
+      ports: [$(echo "$IN_PORTS" | sed "s/,/, /g")]
       password: "$PASSWORD"
-      redundancy: 2
+      redundancy: $CLIENT_REDUNDANCY
 
 ZH
   fi

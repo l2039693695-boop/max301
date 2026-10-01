@@ -172,11 +172,27 @@ func (c *client) start() error {
 	}
 
 	if cfg.Routing.Mode == "bypass_cn" {
-		c.cnip, err = router.LoadCNIPList(cfg.Routing.CNIPFile)
-		if err != nil {
-			return err
+		// An unset or missing cnip_file falls back to the compiled-in list, so
+		// split routing works on a machine that cannot reach GitHub.
+		if cfg.Routing.CNIPFile == "" {
+			c.cnip, err = router.EmbeddedCNIPList()
+			if err != nil {
+				return err
+			}
+			log.Printf("loaded %d domestic prefixes (built in)", c.cnip.Len())
+		} else {
+			c.cnip, err = router.LoadCNIPList(cfg.Routing.CNIPFile)
+			if err != nil {
+				log.Printf("cannot read %s (%v); using the built-in list", cfg.Routing.CNIPFile, err)
+				c.cnip, err = router.EmbeddedCNIPList()
+				if err != nil {
+					return err
+				}
+				log.Printf("loaded %d domestic prefixes (built in)", c.cnip.Len())
+			} else {
+				log.Printf("loaded %d domestic prefixes from %s", c.cnip.Len(), cfg.Routing.CNIPFile)
+			}
 		}
-		log.Printf("loaded %d domestic prefixes from %s", c.cnip.Len(), cfg.Routing.CNIPFile)
 	}
 
 	// Transport first: if the relay is unreachable there is no point disturbing

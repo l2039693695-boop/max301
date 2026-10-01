@@ -14,8 +14,9 @@ client.yaml
 relay.yaml
 exit.yaml
 
-# Domestic prefix list, fetched at deploy time
-chnroute.txt
+# Domestic prefix list, fetched at deploy time. The copy under internal/router
+# is embedded into the binary and must stay tracked, or the build breaks.
+/chnroute.txt
 china_ip_list.txt
 
 # Logs

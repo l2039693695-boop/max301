@@ -3,6 +3,7 @@ package router
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sort"
@@ -30,9 +31,22 @@ func LoadCNIPList(path string) (*CNIPMatcher, error) {
 		return nil, fmt.Errorf("router: open %s: %w", path, err)
 	}
 	defer f.Close()
+	return parseCNIPList(f, path)
+}
 
+// EmbeddedCNIPList returns the prefix list compiled into the binary.
+//
+// It exists because the client used to download the list at setup time, which
+// fails outright on a machine whose hosts file or DNS blocks GitHub -- and that
+// is exactly the kind of machine someone installs a tunnel on. 118 KB of text
+// in the binary is cheaper than an install that cannot complete.
+func EmbeddedCNIPList() (*CNIPMatcher, error) {
+	return parseCNIPList(strings.NewReader(embeddedCNIP), "embedded list")
+}
+
+func parseCNIPList(r io.Reader, path string) (*CNIPMatcher, error) {
 	var ranges []ipRange
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	line := 0
 	for sc.Scan() {
 		line++

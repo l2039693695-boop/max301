@@ -9,8 +9,11 @@ because anything needing a round trip to recover has already missed its tick.
 
 ### Servers
 
-The same command on every node. It asks for the role, detects this host's public
-address, and prints the client settings when it finishes.
+The same command on every node. It asks for the role, the UDP ports to use, and
+the shared password; detects this host's public address; and prints the matching
+client settings when it finishes. Press enter at the port prompt to accept
+20001-20004, or give your own list when that range is taken or a provider treats
+a different one better.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/l2039693695-boop/max301/main/scripts/install.sh | sudo bash
@@ -29,20 +32,24 @@ curl -fsSL .../install.sh | sudo bash -s -- --role relay --password 'SECRET' \
 
 ### Windows client
 
-Download and run it. The program asks for elevation itself, fetches wintun.dll
-and the domestic prefix list, then asks for the server address and password that
-the installer printed.
+Download and run it. The program requests elevation itself and fetches the
+Wintun driver, then asks for the settings the installer printed.
 
 ```powershell
 curl.exe -LO https://github.com/l2039693695-boop/max301/releases/latest/download/max301-client-windows-amd64.exe
 .\max301-client-windows-amd64.exe
 ```
 
+It asks for the server address, its ports, the password and the redundancy
+level. The domestic prefix list is compiled into the binary, so split routing
+needs no download; drop a `chnroute.txt` next to the executable to override it
+with a fresher one.
+
 Settings are saved to `client.yaml` beside the executable and reused on the next
 run. Pass `-c client.yaml` to skip the wizard entirely.
 
 Two things that bite people. A cloud provider's security group sits outside the
-host and the installer cannot reach it — open UDP 20001-20004 there as well, or
+host and the installer cannot reach it — open the UDP ports there as well, or
 nothing connects. And the client must run elevated; it creates a network adapter
 and edits the route table.
 

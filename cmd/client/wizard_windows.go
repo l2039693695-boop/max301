@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,12 +27,12 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 const (
 	wintunVersion = "0.14.1"
 	wintunURL     = "https://www.wintun.net/builds/wintun-" + wintunVersion + ".zip"
-	cnipURL       = "https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt"
 )
 
 var stdin = bufio.NewReader(os.Stdin)
@@ -145,9 +146,65 @@ func ensureAdmin() bool {
 	return false
 }
 
+// httpClient returns a client that honours the system proxy. Without this, a
+// machine whose hosts file blocks the host (or that has no direct route out)
+// cannot download anything -- which is exactly the kind of machine a tunnel
+// gets installed on. ProxyFromEnvironment covers HTTPS_PROXY; systemProxy adds
+// the Internet Options setting that Windows programs normally use.
+func httpClient() *http.Client {
+	return &http.Client{
+		Timeout: 3 * time.Minute,
+		Transport: &http.Transport{
+			Proxy: func(req *http.Request) (*url.URL, error) {
+				if u, err := http.ProxyFromEnvironment(req); err == nil && u != nil {
+					return u, nil
+				}
+				return systemProxy(), nil
+			},
+		},
+	}
+}
+
+// systemProxy reads the per-user proxy from the registry, which is where the
+// Internet Options dialog and most proxy clients on Windows write it.
+func systemProxy() *url.URL {
+	key, err := registry.OpenKey(registry.CURRENT_USER,
+		`Software\Microsoft\Windows\CurrentVersion\Internet Settings`, registry.QUERY_VALUE)
+	if err != nil {
+		return nil
+	}
+	defer key.Close()
+
+	if enabled, _, err := key.GetIntegerValue("ProxyEnable"); err != nil || enabled == 0 {
+		return nil
+	}
+	server, _, err := key.GetStringValue("ProxyServer")
+	if err != nil || server == "" {
+		return nil
+	}
+	// ProxyServer is either "host:port" or a per-scheme list such as
+	// "http=host:port;https=host:port".
+	if strings.Contains(server, "=") {
+		for _, part := range strings.Split(server, ";") {
+			scheme, addr, ok := strings.Cut(part, "=")
+			if ok && (scheme == "http" || scheme == "https") {
+				server = addr
+				break
+			}
+		}
+	}
+	if !strings.Contains(server, "://") {
+		server = "http://" + server
+	}
+	u, err := url.Parse(server)
+	if err != nil {
+		return nil
+	}
+	return u
+}
+
 func download(url, dst string) error {
-	client := &http.Client{Timeout: 3 * time.Minute}
-	resp, err := client.Get(url)
+	resp, err := httpClient().Get(url)
 	if err != nil {
 		return err
 	}
@@ -218,18 +275,18 @@ func ensureWintun(dir string) error {
 	return fmt.Errorf("压缩包里没找到 %s", want)
 }
 
-func ensureCNIP(dir string) (string, error) {
+// cnipFile reports which prefix list to configure. The list is compiled into
+// the binary, so an empty result means "use the built-in copy"; a chnroute.txt
+// the user has put next to the executable wins, which is how someone keeps a
+// fresher list than the release ships.
+func cnipFile(dir string) string {
 	path := filepath.Join(dir, "chnroute.txt")
 	if st, err := os.Stat(path); err == nil && st.Size() > 1000 {
-		say("  国内 IP 段列表已存在")
-		return path, nil
+		say("  使用目录下的 chnroute.txt")
+		return filepath.Base(path)
 	}
-	say("  正在下载国内 IP 段列表（分流用）...")
-	if err := download(cnipURL, path); err != nil {
-		return "", fmt.Errorf("下载 IP 段列表失败: %w", err)
-	}
-	say("  国内 IP 段列表已就位")
-	return path, nil
+	say("  使用内置的国内 IP 段列表")
+	return ""
 }
 
 // askServer collects the first hop. A hostname is accepted as well as an IP,
@@ -265,12 +322,69 @@ func askPassword() string {
 	}
 }
 
-func askRedundancy() int {
+// askPorts collects the server's listening ports. They must match what the
+// installer configured on that node; a mismatch is a tunnel that sends into
+// nothing, with no error to read.
+func askPorts() []int {
 	for {
-		s := ask("冗余份数 1-4（2=普通线路，3=抖动大）", "2")
+		s := ask("服务器端口（逗号分隔，和服务器上填的一致）", "20001,20002")
+		ports, err := parsePorts(s)
+		if err != nil {
+			say("  %s", err)
+			continue
+		}
+		return ports
+	}
+}
+
+func parsePorts(s string) ([]int, error) {
+	fields := strings.Split(strings.ReplaceAll(s, " ", ""), ",")
+	var ports []int
+	seen := map[int]bool{}
+	for _, f := range fields {
+		if f == "" {
+			continue
+		}
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			return nil, fmt.Errorf("%q 不是数字", f)
+		}
+		if n < 1024 || n > 65535 {
+			return nil, fmt.Errorf("端口 %d 超出范围，请用 1024-65535", n)
+		}
+		if seen[n] {
+			return nil, fmt.Errorf("端口 %d 重复了", n)
+		}
+		seen[n] = true
+		ports = append(ports, n)
+	}
+	if len(ports) == 0 {
+		return nil, fmt.Errorf("至少要一个端口")
+	}
+	if len(ports) > 8 {
+		return nil, fmt.Errorf("最多 8 个端口（当前 %d 个）", len(ports))
+	}
+	return ports, nil
+}
+
+// askRedundancy caps the answer at the port count: the loader rejects a higher
+// value, and copies beyond the number of ports would land on ports nobody is
+// listening on anyway.
+func askRedundancy(portCount int) int {
+	max := portCount
+	if max > 4 {
+		max = 4
+	}
+	if max == 1 {
+		say("")
+		say("  只配了 1 个端口，冗余份数固定为 1（复制需要多个端口才有意义）。")
+		return 1
+	}
+	for {
+		s := ask(fmt.Sprintf("冗余份数 1-%d（2=普通线路，3=抖动大）", max), "2")
 		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 || n > 4 {
-			say("  请输入 1 到 4 之间的数字")
+		if err != nil || n < 1 || n > max {
+			say("  请输入 1 到 %d 之间的数字", max)
 			continue
 		}
 		return n
@@ -304,14 +418,27 @@ func randomTunAddress() string {
 	return fmt.Sprintf("10.88.%d.2/24", int(b[0]%250)+1)
 }
 
+// portList formats ports for the YAML flow sequence.
+func portList(ports []int) string {
+	parts := make([]string, len(ports))
+	for i, p := range ports {
+		parts[i] = strconv.Itoa(p)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // writeConfig renders client.yaml. Values come from the wizard rather than a
 // template file so the binary stays self-contained.
-func writeConfig(path, host, password, mode, cnip string, redundancy int) error {
+func writeConfig(path, host, password, mode, cnip string, ports []int, redundancy int) error {
 	var routing string
-	if mode == "bypass_cn" {
-		routing = fmt.Sprintf("routing:\n  mode: \"bypass_cn\"\n  cnip_file: %q\n", cnip)
-	} else {
+	switch {
+	case mode != "bypass_cn":
 		routing = "routing:\n  mode: \"global\"\n"
+	case cnip == "":
+		// No cnip_file key at all: the client then uses its built-in list.
+		routing = "routing:\n  mode: \"bypass_cn\"\n"
+	default:
+		routing = fmt.Sprintf("routing:\n  mode: \"bypass_cn\"\n  cnip_file: %q\n", cnip)
 	}
 
 	body := fmt.Sprintf(`# Max301 客户端配置，由安装向导生成。
@@ -326,7 +453,7 @@ tun:
 
 relay:
   host: %q
-  ports: [20001, 20002]
+  ports: [%s]
   password: %q
   redundancy: %d
 
@@ -334,7 +461,7 @@ relay:
 log:
   level: "info"
   file: "client.log"
-`, randomTunAddress(), host, password, redundancy, routing)
+`, randomTunAddress(), host, portList(ports), password, redundancy, routing)
 
 	// 0600 is what we ask for, but Windows derives the file's ACL from the
 	// parent directory and ignores the mode, so this is not a protection the
@@ -391,8 +518,9 @@ func setup(dir string) (string, error) {
 	say("")
 
 	host := askServer()
+	ports := askPorts()
 	password := askPassword()
-	redundancy := askRedundancy()
+	redundancy := askRedundancy(len(ports))
 	mode := askMode()
 
 	say("")
@@ -402,14 +530,10 @@ func setup(dir string) (string, error) {
 	}
 	cnip := ""
 	if mode == "bypass_cn" {
-		p, err := ensureCNIP(dir)
-		if err != nil {
-			return "", err
-		}
-		cnip = filepath.Base(p)
+		cnip = cnipFile(dir)
 	}
 
-	if err := writeConfig(cfgPath, host, password, mode, cnip, redundancy); err != nil {
+	if err := writeConfig(cfgPath, host, password, mode, cnip, ports, redundancy); err != nil {
 		return "", fmt.Errorf("写配置文件失败: %w", err)
 	}
 	say("  配置已保存：client.yaml")

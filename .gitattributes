@@ -1,0 +1,14 @@
+# Normalise line endings in the repository.
+* text=auto eol=lf
+
+# Shell scripts must keep LF: CRLF makes Linux reject the shebang with
+# "bad interpreter: /usr/bin/env bash^M".
+*.sh text eol=lf
+
+# PowerShell is happier with CRLF on Windows.
+*.ps1 text eol=crlf
+
+*.go text eol=lf
+*.yaml text eol=lf
+*.example text eol=lf
+*.md text eol=lf

@@ -1,0 +1,29 @@
+# Relay node configuration.
+#
+# The same binary runs on every intermediate hop. Copy this file per hop and
+# adjust the outbound section: a leased line needs no duplication, a congested
+# public path benefits from several copies spread over several ports.
+#
+# Keep the password out of version control. All nodes must share it.
+
+mode: relay
+
+# Where clients (or the previous hop) connect.
+inbound:
+  listen: "0.0.0.0"
+  ports: [20001, 20002]
+  password: "replace-with-a-long-shared-secret"
+
+# Where to forward. Each extra port is another chance to hash onto a different
+# path through the carrier, so give redundancy somewhere to go.
+outbound:
+  host: "next-hop-ip"
+  ports: [20001, 20002, 20003, 20004]
+  password: "replace-with-a-long-shared-secret"
+
+  # Copies of each game packet. 1 on a leased line (duplication buys nothing
+  # there); 3 on a jittery public path. Must not exceed the port count.
+  redundancy: 1
+
+log:
+  level: "info"

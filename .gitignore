@@ -1,0 +1,27 @@
+# Compiled binaries. Anchored to the repository root so they do not also match
+# the cmd/relay and cmd/exit source directories.
+/bin/
+/relay
+/exit
+/max301-client.exe
+*.exe
+*.dll
+
+# Real configuration holds the shared password; only examples belong in git.
+*.yaml
+!configs/*.yaml.example
+client.yaml
+relay.yaml
+exit.yaml
+
+# Domestic prefix list, fetched at deploy time
+chnroute.txt
+china_ip_list.txt
+
+# Logs
+*.log
+
+# Go
+vendor/
+*.test
+*.out

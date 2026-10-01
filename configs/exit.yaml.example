@@ -1,0 +1,25 @@
+# Exit node configuration (Amsterdam).
+#
+# The exit node decrypts tunnelled packets and forwards the inner UDP payload to
+# the game server from its own address, then carries replies back.
+#
+# Only UDP is forwarded. TCP inside the tunnel is counted and dropped.
+
+mode: exit
+
+# Must list at least as many ports as the previous hop's redundancy level, or
+# copies will land on a closed port.
+inbound:
+  listen: "0.0.0.0"
+  ports: [20001, 20002, 20003, 20004]
+  password: "replace-with-a-long-shared-secret"
+
+outbound:
+  mode: "nat"
+
+  # How long an idle flow keeps its socket and mapping. Game sessions are
+  # long-lived; this only needs to outlast a pause in traffic.
+  nat_timeout: 2m
+
+log:
+  level: "info"

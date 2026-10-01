@@ -1,0 +1,39 @@
+# Windows client configuration.
+#
+# Run as administrator: creating the tunnel adapter and editing the route table
+# both require it. wintun.dll must sit next to the executable.
+
+mode: client
+
+tun:
+  name: "Max301"
+
+  # Tunnel address. Any private range the machine does not already use.
+  address: "10.88.0.2/24"
+
+  # 1400 leaves room for the 36-byte frame overhead plus the outer IP and UDP
+  # headers without fragmenting on a 1500-byte path.
+  mtu: 1400
+
+# First hop.
+relay:
+  host: "relay-ip"
+  ports: [20001, 20002]
+  password: "replace-with-a-long-shared-secret"
+
+  # Copies of each game packet. 2 is a reasonable default on a domestic
+  # broadband link. Must not exceed the port count.
+  redundancy: 2
+
+routing:
+  # bypass_cn sends only foreign traffic through the tunnel and leaves domestic
+  # traffic on the normal route. global sends everything.
+  mode: "bypass_cn"
+
+  # Prefix list for bypass_cn, one CIDR per line.
+  # Source: https://github.com/17mon/china_ip_list
+  cnip_file: "chnroute.txt"
+
+log:
+  level: "info"
+  file: "client.log"
